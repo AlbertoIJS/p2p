@@ -13,11 +13,11 @@ type File struct {
 	Data []byte
 }
 
-type Node struct {
+type Server struct {
 	Files []File
 }
 
-var nodes []Node
+var servers []Server
 var mutex = &sync.Mutex{}
 
 // Búsqueda por índices locales
@@ -25,8 +25,8 @@ func searchFile(fileName string) *File {
 	mutex.Lock()
 	defer mutex.Unlock()
 
-	for _, node := range nodes {
-		for _, file := range node.Files {
+	for _, server := range servers {
+		for _, file := range server.Files {
 			if file.Name == fileName {
 				return &file
 			}
@@ -37,7 +37,13 @@ func searchFile(fileName string) *File {
 }
 
 func main() {
-	pc, err := net.ListenPacket("udp", ":9999")
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: server <port>")
+		return
+	}
+
+	port := os.Args[1]
+	pc, err := net.ListenPacket("udp", ":"+port)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -50,20 +56,26 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var nodeFiles []File
-	for _, entry := range fileEntries {
+	// Crea instancias de servidores
+	numServers := 3
+	for i := 0; i < numServers; i++ {
+		servers = append(servers, Server{})
+	}
+
+	// Distribuye los archivos entre los servidores
+	for i, entry := range fileEntries {
 		if !entry.IsDir() {
 			data, err := os.ReadFile("./files/" + entry.Name())
 			if err != nil {
 				log.Fatal(err)
 			}
-			nodeFiles = append(nodeFiles, File{Name: entry.Name(), Data: data})
+			serverIndex := i % numServers
+			servers[serverIndex].Files = append(servers[serverIndex].Files, File{Name: entry.Name(), Data: data})
 		}
 	}
-	nodes = append(nodes, Node{Files: nodeFiles})
 
 	buffer := make([]byte, 1024)
-	fmt.Println("Server is listening...")
+	fmt.Println("Server is listening on port", port)
 	for {
 		length, addr, err := pc.ReadFrom(buffer)
 		if err != nil {
@@ -73,10 +85,11 @@ func main() {
 
 		fileName := string(buffer[:length])
 		file := searchFile(fileName)
+		maxPacketSize := 1024
 		if file != nil {
-			// Divide el archivo en chunks de 1024 bytes y los envía uno por uno
-			for i := 0; i < len(file.Data); i += 1024 {
-				end := i + 1024
+			// Divide el archivo en chunks de 65535 bytes y los envía uno por uno
+			for i := 0; i < len(file.Data); i += maxPacketSize {
+				end := i + maxPacketSize
 				if end > len(file.Data) {
 					end = len(file.Data)
 				}
